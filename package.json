@@ -1,0 +1,20 @@
+{
+  "name": "doccer_js",
+  "version": "1.0.0",
+  "description": "Discussion \"Documenter\" - Summarizes discussions within a specified timerange",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^12.5.3",
+    "discord.js-commando": "^0.12.3",
+    "dotenv": "^8.4.0",
+    "moment": "^2.29.1"
+  },
+  "devDependencies": {
+    "eslint": "^7.25.0"
+  }
+}
