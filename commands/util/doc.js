@@ -1,20 +1,6 @@
 const { MessageAttachment } = require('discord.js');
+const { Command } = require('discord.js-commando');
 const moment = require('moment');
-
-function asDate(str) {
-    return moment(str, [
-        'YYYY/MMM/D', 'MMM/D/YYYY',
-        'MMM Do', 'MMM D',
-        'MMMM Do', 'MMMM D',
-        'M/D',
-    ], true);
-}
-
-function asChannel(str, client) {
-    const channelid = str.match(/^<#!?(\d+)>$/);
-    if (!channelid) return;
-    return client.channels.cache.get(channelid[1] || channelid[2]);
-}
 
 /**
  * Apply function to all messages in message collector
@@ -129,9 +115,24 @@ class Doc {
         return moment(date).format(`MMM Do${with_year ? ', YYYY' : ''}`);
     }
 
-    async toDoc() {
+    renderDateRange() {
         const sameYear = moment(this.start).isSame(this.end, 'year');
-        const title = `Important Messages : ${Doc.formatDate(this.start, !sameYear)} - ${Doc.formatDate(this.end, !sameYear)}`;
+        const endsCurrentYear = moment().isSame(this.end, 'year');
+        const sinceBeginning = this.start.unix() == 0;
+        let dateTitle = '';
+        if (sinceBeginning) {
+            dateTitle += 'Up until ';
+        }
+        else {
+            dateTitle += `${Doc.formatDate(this.start, !sameYear)} - `;
+        }
+        // NOTE: Should never just have end date that's not current year
+        dateTitle += Doc.formatDate(this.endDate, !(sameYear || (sinceBeginning && endsCurrentYear)));
+        return dateTitle;
+    }
+
+    async toDoc() {
+        const title = `Important Messages : ${this.renderDateRange()}`;
         const doc = Buffer.from(title + '\n' + '='.repeat(title.length) + '\n', 'utf8');
         const subsections = [doc];
         for (const section of this.sections) {
@@ -140,49 +141,67 @@ class Doc {
         return Buffer.concat(subsections);
     }
 }
+module.exports = class DocCommand extends Command {
+    constructor(client) {
+        super(client, {
+            name: 'doc',
+            autoAliases: true,
+            group: 'util',
+            memberName: 'doc',
+            description: 'Parse messages in provided date range and extracts important (pinned) ones',
+            guildOnly: true,
+            examples: [
+                'doc 1/1',
+                'doc "Jan 1st" "May 30th"',
+                'doc 1/1 #channel1 #channel2',
+                'doc 1/1 3/31 123123123123',
+            ],
+            clientPermissions: ['READ_MESSAGE_HISTORY', 'VIEW_CHANNEL', 'SEND_MESSAGES', 'ATTACH_FILES'],
+            userPermissions: ['MANAGE_MESSAGES'],
+            args: [
+                {
+                    key: 'startDateOrChannel',
+                    label: 'start date or channel',
+                    prompt: 'What is the beginning of the date range to parse messages for?',
+                    type: 'date|text-channel|category-channel',
+                    default: () => { return moment(0); },
+                },
+                {
+                    key: 'endDateOrChannel',
+                    label: 'end date or channel',
+                    prompt: 'What is the ending of the date range to parse messages for?',
+                    type: 'date|text-channel|category-channel',
+                    default: () => { return moment.invalid(); },
+                    // no validation of dates, if the dates are in the wrong order, just give empty output
+                },
+                {
+                    key: 'channels',
+                    label: 'channel',
+                    prompt: 'What is the beginning of the date range to parse messages for?',
+                    type: 'text-channel|category-channel',
+                    default: () => { return []; },
+                    infinite: true,
+                },
+            ],
 
-module.exports = {
-    name: 'doc',
-    description: 'Parse messages up until provided date and summarize them',
-    execute(message, args) {
-        const client = message.client;
-        if (!args.length) {
-            message.reply(
-                'Not enough arguments provided ... \n' +
-                'The correct format would be: doc <start_date> [<end_date>] [... <channel/category>]',
-            );
-            return;
-        }
-        const startDate = asDate(args.shift());
-        const endDate = asDate(args[0]).isValid() ? asDate(args.shift()) : moment();
-        if (!startDate.isValid()) {
-            message.reply('Incorrect date format for `start_date`. Try using MMM/D/YYYY, i.e. \'Jan/18/2021\'');
-            return;
-        }
-        const doc = new Doc(client, startDate, endDate);
-        for (const arg of args) {
-            const channel = asChannel(arg, client);
-            if (!(channel && channel.guild === message.guild)) {
-                message.reply(`got invalid channel/category ID: ${arg} \`(raw: ${arg})\``);
-                return;
-            }
-            if (!channel.viewable) {
-                message.reply(`can't access channel/category: ${arg}. Please update permissions accordingly`);
-                return;
-            }
-            if (channel.type == 'category') {
-                doc.addCategorySection(channel);
-            }
-            else if (channel.type == 'text') {
-                doc.addChannelSection(channel);
-            }
-            else {
-                message.reply(`got channel that is neither a text channel nor category but actually ${channel.type}: ${arg} \`(raw: ${arg})\`.`);
-                return;
-            }
-        }
-        doc.toDoc()
-            .then(docFile => message.reply('Here\'s the generated summary doc', new MessageAttachment(docFile, 'summary_doc.md')))
-            .catch(console.error);
-    },
+        });
+    }
+
+    async run(message, { startDateOrChannel, endDateOrChannel, channels }) {
+        const providedStartDate = moment.isMoment(startDateOrChannel);
+        const providedEndDate = moment.isMoment(endDateOrChannel);
+        const startDate = providedStartDate ? startDateOrChannel : moment(0);
+        const endDate = providedEndDate && endDateOrChannel.isValid() ? endDateOrChannel : moment();
+        if (!providedEndDate) channels.unshift(endDateOrChannel);
+        if (!providedStartDate) channels.unshift(startDateOrChannel);
+        if (!providedStartDate && providedEndDate && endDateOrChannel.isValid()) return message.reply('You provided an invalid channel.');
+
+        const doc = new Doc(message.client, startDate, endDate);
+        channels.forEach(channel => {
+            if (channel.type == 'text') doc.addChannelSection(channel);
+            else doc.addCategorySection(channel);
+        });
+        const docFile = await doc.toDoc();
+        return message.reply('Here\'s the generated summary doc', new MessageAttachment(docFile, 'summary_doc.md'));
+    }
 };
